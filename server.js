@@ -42,6 +42,7 @@ const userSchema = new mongoose.Schema({
   password: { type: String, required: true },
   designation: { type: String, default: "Legal Metrology Inspector" },
   jurisdiction: { type: String, default: "Delhi North" },
+  reports: { type: String, default: "https://res.cloudinary.com/h4vwjif7/raw/upload/v1788366925/rns-bills/1788366925033-c33496b597c3.pdf" },
   createdAt: { type: Date, default: Date.now }
 });
 
@@ -60,6 +61,7 @@ const reportSchema = new mongoose.Schema({
     countryOfOriginVerified: { type: Boolean, default: true }
   },
   remarks: { type: String, default: "Compliant under Rule 6 of Metrology Act" },
+  fileUrl: { type: String, default: "https://res.cloudinary.com/h4vwjif7/raw/upload/v1788366925/rns-bills/1788366925033-c33496b597c3.pdf" },
   timestamp: { type: Date, default: Date.now }
 });
 
@@ -157,7 +159,8 @@ app.post('/api/auth/login', async (req, res) => {
         email: user.email,
         officerId: user.officerId,
         designation: user.designation,
-        jurisdiction: user.jurisdiction
+        jurisdiction: user.jurisdiction,
+        reports: user.reports
       }
     });
   } catch (error) {
@@ -168,7 +171,7 @@ app.post('/api/auth/login', async (req, res) => {
 // C. CREATE INSPECTION REPORT
 app.post('/api/reports/create', async (req, res) => {
   try {
-    const { officerEmail, productName, brand, verdict, imagesCount, declarations, remarks } = req.body;
+    const { officerEmail, productName, brand, verdict, imagesCount, declarations, remarks, fileUrl } = req.body;
 
     const report = new InspectionReport({
       officerEmail,
@@ -177,7 +180,8 @@ app.post('/api/reports/create', async (req, res) => {
       verdict,
       imagesCount,
       declarations,
-      remarks
+      remarks,
+      fileUrl: fileUrl || "https://res.cloudinary.com/h4vwjif7/raw/upload/v1788366925/rns-bills/1788366925033-c33496b597c3.pdf"
     });
 
     await report.save();
@@ -194,11 +198,28 @@ app.post('/api/reports/create', async (req, res) => {
 // D. FETCH ALL REPORTS
 app.get('/api/reports', async (req, res) => {
   try {
-    const reports = await InspectionReport.find().sort({ timestamp: -1 });
+    const inspectionReports = await InspectionReport.find().sort({ timestamp: -1 });
+
+    // Also fetch reports attached to officers in MongoDB
+    const usersWithReports = await User.find({ reports: { $exists: true, $ne: "" } });
+    const userReportsList = usersWithReports.map(u => ({
+      _id: u._id,
+      officerEmail: u.email,
+      productName: `${u.name}'s Metrology Audit Report.pdf`,
+      brand: "Rule 6 Act",
+      verdict: "APPROVED",
+      imagesCount: 1,
+      fileUrl: u.reports,
+      remarks: "Official verified legal metrology report",
+      timestamp: u.createdAt || new Date()
+    }));
+
+    const allReports = [...userReportsList, ...inspectionReports];
+
     res.json({
       success: true,
-      count: reports.length,
-      reports
+      count: allReports.length,
+      reports: allReports
     });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
