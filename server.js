@@ -18,13 +18,12 @@ app.use(cors());         // Enables Cross-Origin requests for Android app
 // ---------------------------------------------------
 // 2. CONNECT TO MONGODB ATLAS
 // ---------------------------------------------------
-const MONGO_URI = process.env.MONGO_URI || 'mongodb+srv://preetsain0306_db_user:c4i71ZBFcWpok8sh@cluster0.f8zmc3h.mongodb.net/nirikshak_db?retryWrites=true&w=majority';
+const MONGO_URI = process.env.MONGO_URI;
 
 mongoose.connect(MONGO_URI)
   .then(async () => {
     console.log('✅ Connected to MongoDB Atlas Cloud Database');
     await seedDefaultOfficer();
-    await seedDefaultReports();
   })
   .catch((err) => {
     console.error('❌ MongoDB Connection Error:', err.message);
@@ -54,7 +53,7 @@ const reportSchema = new mongoose.Schema({
   officerEmail: { type: String, required: true },
   productName: { type: String, required: true },
   brand: { type: String, default: "Generic" },
-  verdict: { type: String, enum: ['VERIFIED', 'APPROVED', 'REJECTED', 'PENDING', 'FILED', 'OVERRULED', 'ACTION TAKEN'], required: true },
+  verdict: { type: String, enum: ['VERIFIED', 'REJECTED', 'PENDING'], required: true },
   imagesCount: { type: Number, default: 1 },
   declarations: {
     mrpVerified: { type: Boolean, default: true },
@@ -90,73 +89,6 @@ async function seedDefaultOfficer() {
   }
 }
 
-// Auto-seed default inspection reports into MongoDB Atlas if collection is empty
-async function seedDefaultReports() {
-  try {
-    const count = await InspectionReport.countDocuments();
-    if (count === 0) {
-      const sampleReports = [
-        {
-          officerEmail: 'amit.kumar@gov.in',
-          productName: 'Report_DLN_2026_0902.pdf',
-          brand: 'Rule 6 Act',
-          verdict: 'APPROVED',
-          imagesCount: 2,
-          declarations: { mrpVerified: true, netQuantityVerified: true, countryOfOriginVerified: true },
-          remarks: 'Mandatory declarations fully compliant with Legal Metrology Rules',
-          fileUrl: 'https://res.cloudinary.com/h4vwjif7/raw/upload/v1788366925/rns-bills/1788366925033-c33496b597c3.pdf'
-        },
-        {
-          officerEmail: 'amit.kumar@gov.in',
-          productName: 'Compliance_Audit_Commodities_89.pdf',
-          brand: 'Rule 9 Act',
-          verdict: 'APPROVED',
-          imagesCount: 3,
-          declarations: { mrpVerified: true, netQuantityVerified: true, countryOfOriginVerified: true },
-          remarks: 'Principal display area sizing and unit sale price compliant',
-          fileUrl: 'https://res.cloudinary.com/h4vwjif7/raw/upload/v1788366925/rns-bills/1788366925033-c33496b597c3.pdf'
-        },
-        {
-          officerEmail: 'amit.kumar@gov.in',
-          productName: 'Packaged_Commodities_Audit_DelhiNorth.pdf',
-          brand: 'Legal Metrology',
-          verdict: 'VERIFIED',
-          imagesCount: 1,
-          declarations: { mrpVerified: true, netQuantityVerified: true, countryOfOriginVerified: true },
-          remarks: 'Statutory verification completed with clearance certificate',
-          fileUrl: 'https://res.cloudinary.com/h4vwjif7/raw/upload/v1788366925/rns-bills/1788366925033-c33496b597c3.pdf'
-        },
-        {
-          officerEmail: 'amit.kumar@gov.in',
-          productName: 'Inspection_Summary_Week35.pdf',
-          brand: 'Rule 6 Act',
-          verdict: 'PENDING',
-          imagesCount: 2,
-          declarations: { mrpVerified: true, netQuantityVerified: false, countryOfOriginVerified: true },
-          remarks: 'Net quantity verification pending laboratory measurement check',
-          fileUrl: 'https://res.cloudinary.com/h4vwjif7/raw/upload/v1788366925/rns-bills/1788366925033-c33496b597c3.pdf'
-        },
-        {
-          officerEmail: 'amit.kumar@gov.in',
-          productName: 'Rule6_Packaging_Violations_Audit.pdf',
-          brand: 'Rule 6 Act',
-          verdict: 'REJECTED',
-          imagesCount: 2,
-          declarations: { mrpVerified: false, netQuantityVerified: true, countryOfOriginVerified: false },
-          remarks: 'MRP font height violation and missing manufacturer address details',
-          fileUrl: 'https://res.cloudinary.com/h4vwjif7/raw/upload/v1788366925/rns-bills/1788366925033-c33496b597c3.pdf'
-        }
-      ];
-      await InspectionReport.insertMany(sampleReports);
-      console.log('📋 Automatically seeded default inspection reports into MongoDB Atlas');
-    } else {
-      console.log(`📋 Found ${count} inspection reports in MongoDB Atlas`);
-    }
-  } catch (err) {
-    console.error('Seed reports check warning:', err.message);
-  }
-}
-
 // ---------------------------------------------------
 // 4. REST API ENDPOINTS FOR ANDROID APP
 // ---------------------------------------------------
@@ -166,56 +98,34 @@ app.get('/', (req, res) => {
   res.send('🏛️ Nirikshak Legal Metrology API Server Running');
 });
 
-// A. OFFICER REGISTRATION (Sign Up)
+// A. OFFICER REGISTRATION
 app.post('/api/auth/register', async (req, res) => {
   try {
     const { name, email, password, officerId, designation, jurisdiction } = req.body;
 
-    if (!name || !name.trim()) {
-      return res.status(400).json({ success: false, message: 'Officer name is required' });
-    }
-    if (!email || !email.trim() || !email.includes('@')) {
-      return res.status(400).json({ success: false, message: 'Valid official email ID is required' });
-    }
-    if (!password || password.length < 4) {
-      return res.status(400).json({ success: false, message: 'Password must be at least 4 characters' });
-    }
-
-    const normalizedEmail = email.trim().toLowerCase();
-    const existingUser = await User.findOne({ email: normalizedEmail });
+    const existingUser = await User.findOne({ email });
     if (existingUser) {
-      return res.status(400).json({ success: false, message: 'Official email ID already registered in database' });
+      return res.status(400).json({ success: false, message: 'Email already registered' });
     }
-
-    const assignedOfficerId = officerId && officerId.trim().length > 0
-      ? officerId.trim()
-      : `DLN-INS-${Math.floor(1000 + Math.random() * 9000)}`;
 
     const newUser = new User({
-      name: name.trim(),
-      email: normalizedEmail,
+      name,
+      email,
       password, // In production, hash with bcrypt.hash(password, 10)
-      officerId: assignedOfficerId,
-      designation: designation && designation.trim().length > 0 ? designation.trim() : "Legal Metrology Inspector",
-      jurisdiction: jurisdiction && jurisdiction.trim().length > 0 ? jurisdiction.trim() : "Delhi North"
+      officerId: officerId || `DLN-INS-${Math.floor(1000 + Math.random() * 9000)}`,
+      designation: designation || "Legal Metrology Inspector",
+      jurisdiction: jurisdiction || "Delhi North"
     });
 
     await newUser.save();
-
-    // Generate random 6-Digit OTP
-    const generatedOtp = Math.floor(100000 + Math.random() * 900000).toString();
-
     res.status(201).json({
       success: true,
-      message: 'Officer account created successfully. Verification OTP generated.',
-      otp: generatedOtp,
+      message: 'Officer account created successfully',
       user: {
         name: newUser.name,
         email: newUser.email,
         officerId: newUser.officerId,
-        designation: newUser.designation,
-        jurisdiction: newUser.jurisdiction,
-        reports: newUser.reports
+        designation: newUser.designation
       }
     });
   } catch (error) {
@@ -227,11 +137,8 @@ app.post('/api/auth/register', async (req, res) => {
 app.post('/api/auth/login', async (req, res) => {
   try {
     const { email, password } = req.body;
-    if (!email || !password) {
-      return res.status(400).json({ success: false, message: 'Email and password are required' });
-    }
 
-    const user = await User.findOne({ email: email.trim().toLowerCase() });
+    const user = await User.findOne({ email });
     if (!user) {
       return res.status(404).json({ success: false, message: 'Official email ID not found' });
     }
