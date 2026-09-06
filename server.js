@@ -21,9 +21,8 @@ app.use(cors());         // Enables Cross-Origin requests for Android app
 const MONGO_URI = process.env.MONGO_URI;
 
 mongoose.connect(MONGO_URI)
-  .then(async () => {
+  .then(() => {
     console.log('✅ Connected to MongoDB Atlas Cloud Database');
-    await seedDefaultOfficer();
   })
   .catch((err) => {
     console.error('❌ MongoDB Connection Error:', err.message);
@@ -34,26 +33,26 @@ mongoose.connect(MONGO_URI)
 // 3. MONGOOSE DATA SCHEMAS
 // ---------------------------------------------------
 
-// User Schema (Officer / Inspector)
+// User Schema (Flexible to read whatever fields exist in your MongoDB database)
 const userSchema = new mongoose.Schema({
-  officerId: { type: String, required: true, unique: true },
-  name: { type: String, required: true },
-  email: { type: String, required: true, unique: true },
+  userId: { type: String },
+  officerId: { type: String },
+  name: { type: String },
+  email: { type: String },
   password: { type: String, required: true },
-  designation: { type: String, default: "Legal Metrology Inspector" },
-  jurisdiction: { type: String, default: "Delhi North" },
-  reports: { type: String, default: "https://res.cloudinary.com/h4vwjif7/raw/upload/v1788366925/rns-bills/1788366925033-c33496b597c3.pdf" },
-  createdAt: { type: Date, default: Date.now }
-});
+  designation: { type: String },
+  jurisdiction: { type: String },
+  reports: { type: String }
+}, { strict: false });
 
 const User = mongoose.model('User', userSchema);
 
 // Inspection Report Schema
 const reportSchema = new mongoose.Schema({
-  officerEmail: { type: String, required: true },
+  officerEmail: { type: String },
   productName: { type: String, required: true },
   brand: { type: String, default: "Generic" },
-  verdict: { type: String, enum: ['VERIFIED', 'REJECTED', 'PENDING'], required: true },
+  verdict: { type: String, default: "VERIFIED" },
   imagesCount: { type: Number, default: 1 },
   declarations: {
     mrpVerified: { type: Boolean, default: true },
@@ -63,31 +62,9 @@ const reportSchema = new mongoose.Schema({
   remarks: { type: String, default: "Compliant under Rule 6 of Metrology Act" },
   fileUrl: { type: String, default: "https://res.cloudinary.com/h4vwjif7/raw/upload/v1788366925/rns-bills/1788366925033-c33496b597c3.pdf" },
   timestamp: { type: Date, default: Date.now }
-});
+}, { strict: false });
 
 const InspectionReport = mongoose.model('InspectionReport', reportSchema);
-
-// Auto-seed default officer if not exists in MongoDB Atlas
-async function seedDefaultOfficer() {
-  try {
-    const existing = await User.findOne({ email: 'amit.kumar@gov.in' });
-    if (!existing) {
-      await User.create({
-        name: 'Amit Kumar',
-        email: 'amit.kumar@gov.in',
-        password: 'admin123',
-        officerId: 'DLN-INS-0254',
-        designation: 'Legal Metrology Inspector',
-        jurisdiction: 'Delhi North'
-      });
-      console.log('👤 Automatically seeded default officer: amit.kumar@gov.in / admin123');
-    } else {
-      console.log('👤 Default officer amit.kumar@gov.in verified in database');
-    }
-  } catch (err) {
-    console.error('Seed check warning:', err.message);
-  }
-}
 
 // ---------------------------------------------------
 // 4. REST API ENDPOINTS FOR ANDROID APP
@@ -101,17 +78,23 @@ app.get('/', (req, res) => {
 // A. OFFICER REGISTRATION
 app.post('/api/auth/register', async (req, res) => {
   try {
-    const { name, email, password, officerId, designation, jurisdiction } = req.body;
+    const { name, email, password, officerId, designation, jurisdiction, userId } = req.body;
 
-    const existingUser = await User.findOne({ email });
+    const existingUser = await User.findOne({
+      $or: [
+        { email: email || "" },
+        { userId: userId || "" }
+      ]
+    });
     if (existingUser) {
-      return res.status(400).json({ success: false, message: 'Email already registered' });
+      return res.status(400).json({ success: false, message: 'User ID or Email already registered' });
     }
 
     const newUser = new User({
-      name,
-      email,
-      password, // In production, hash with bcrypt.hash(password, 10)
+      name: name || userId || email,
+      email: email || "",
+      userId: userId || email || "",
+      password,
       officerId: officerId || `DLN-INS-${Math.floor(1000 + Math.random() * 9000)}`,
       designation: designation || "Legal Metrology Inspector",
       jurisdiction: jurisdiction || "Delhi North"
@@ -124,6 +107,7 @@ app.post('/api/auth/register', async (req, res) => {
       user: {
         name: newUser.name,
         email: newUser.email,
+        userId: newUser.userId,
         officerId: newUser.officerId,
         designation: newUser.designation
       }
@@ -133,18 +117,27 @@ app.post('/api/auth/register', async (req, res) => {
   }
 });
 
-// B. OFFICER LOGIN (Sends OTP)
+// B. OFFICER LOGIN (Queries Database for userId or email)
 app.post('/api/auth/login', async (req, res) => {
   try {
-    const { email, password } = req.body;
+    const { email, userId, password } = req.body;
+    const identifier = (email || userId || "").trim();
 
-    const user = await User.findOne({ email });
+    // Query user strictly from database by email, userId, or officerId (case-insensitive)
+    const user = await User.findOne({
+      $or: [
+        { email: { $regex: new RegExp(`^${identifier}$`, 'i') } },
+        { userId: { $regex: new RegExp(`^${identifier}$`, 'i') } },
+        { officerId: { $regex: new RegExp(`^${identifier}$`, 'i') } }
+      ]
+    });
+
     if (!user) {
-      return res.status(404).json({ success: false, message: 'Official email ID not found' });
+      return res.status(404).json({ success: false, message: 'User ID / Official email not found in database' });
     }
 
     if (user.password !== password) {
-      return res.status(401).json({ success: false, message: 'Invalid password' });
+      return res.status(401).json({ success: false, message: 'Incorrect password. Please enter valid credentials.' });
     }
 
     // Generate random 6-Digit OTP
@@ -155,12 +148,12 @@ app.post('/api/auth/login', async (req, res) => {
       message: 'Login credentials verified. OTP generated.',
       otp: generatedOtp,
       user: {
-        name: user.name,
-        email: user.email,
-        officerId: user.officerId,
-        designation: user.designation,
-        jurisdiction: user.jurisdiction,
-        reports: user.reports
+        name: user.name || user.userId || user.email?.split('@')[0] || 'Inspector',
+        email: user.email || user.userId || '',
+        officerId: user.officerId || user.userId || 'DLN-001',
+        designation: user.designation || 'Legal Metrology Inspector',
+        jurisdiction: user.jurisdiction || 'Headquarters',
+        reports: user.reports || ''
       }
     });
   } catch (error) {
