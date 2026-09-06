@@ -6,6 +6,7 @@ dns.setServers(['8.8.8.8', '1.1.1.1']);
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
+const bcrypt = require('bcryptjs');
 
 const app = express();
 
@@ -25,8 +26,8 @@ mongoose.connect(MONGO_URI)
     console.log('✅ Connected to MongoDB Atlas Cloud Database');
   })
   .catch((err) => {
-    console.error('❌ MongoDB Connection Error:', err.message);
-    process.exit(1);
+    console.error('❌ MongoDB Connection Warning:', err.message);
+    console.warn('⚠️ Server remains running. If queries fail, check MongoDB Atlas Network Access (allow 0.0.0.0/0).');
   });
 
 // ---------------------------------------------------
@@ -35,11 +36,15 @@ mongoose.connect(MONGO_URI)
 
 // User Schema (Flexible to read whatever fields exist in your MongoDB database)
 const userSchema = new mongoose.Schema({
+  username: { type: String },
   userId: { type: String },
   officerId: { type: String },
   name: { type: String },
+  full_name: { type: String },
   email: { type: String },
-  password: { type: String, required: true },
+  password: { type: String },
+  password_hash: { type: String },
+  role: { type: String },
   designation: { type: String },
   jurisdiction: { type: String },
   reports: { type: String }
@@ -78,25 +83,32 @@ app.get('/', (req, res) => {
 // A. OFFICER REGISTRATION
 app.post('/api/auth/register', async (req, res) => {
   try {
-    const { name, email, password, officerId, designation, jurisdiction, userId } = req.body;
+    const { name, email, password, officerId, designation, jurisdiction, userId, username, full_name, role } = req.body;
 
     const existingUser = await User.findOne({
       $or: [
+        { username: username || "" },
         { email: email || "" },
         { userId: userId || "" }
       ]
     });
     if (existingUser) {
-      return res.status(400).json({ success: false, message: 'User ID or Email already registered' });
+      return res.status(400).json({ success: false, message: 'Username or Email already registered' });
     }
 
+    const hashedPassword = await bcrypt.hash(password, 10);
+
     const newUser = new User({
-      name: name || userId || email,
+      username: username || userId || email,
+      full_name: full_name || name || username,
+      name: full_name || name || username,
       email: email || "",
-      userId: userId || email || "",
+      userId: userId || username || email || "",
+      password_hash: hashedPassword,
       password,
-      officerId: officerId || `DLN-INS-${Math.floor(1000 + Math.random() * 9000)}`,
-      designation: designation || "Legal Metrology Inspector",
+      role: role || designation || "Legal Metrology Inspector",
+      officerId: officerId || username || `DLN-INS-${Math.floor(1000 + Math.random() * 9000)}`,
+      designation: role || designation || "Legal Metrology Inspector",
       jurisdiction: jurisdiction || "Delhi North"
     });
 
@@ -105,11 +117,11 @@ app.post('/api/auth/register', async (req, res) => {
       success: true,
       message: 'Officer account created successfully',
       user: {
-        name: newUser.name,
+        name: newUser.full_name || newUser.name,
+        username: newUser.username,
         email: newUser.email,
-        userId: newUser.userId,
-        officerId: newUser.officerId,
-        designation: newUser.designation
+        role: newUser.role,
+        officerId: newUser.officerId
       }
     });
   } catch (error) {
@@ -117,15 +129,23 @@ app.post('/api/auth/register', async (req, res) => {
   }
 });
 
-// B. OFFICER LOGIN (Queries Database for userId or email)
+// B. OFFICER LOGIN (Queries Database for username, email, or userId with bcrypt password_hash support)
 app.post('/api/auth/login', async (req, res) => {
   try {
-    const { email, userId, password } = req.body;
-    const identifier = (email || userId || "").trim();
+    const { email, userId, username, password } = req.body;
+    const identifier = (username || email || userId || "").trim();
 
-    // Query user strictly from database by email, userId, or officerId (case-insensitive)
+    if (mongoose.connection.readyState !== 1) {
+      return res.status(503).json({
+        success: false,
+        message: 'Database is still connecting or unreachable. Please check MongoDB Atlas Network Access (whitelist 0.0.0.0/0).'
+      });
+    }
+
+    // Query user strictly from database by username, email, userId, or officerId (case-insensitive)
     const user = await User.findOne({
       $or: [
+        { username: { $regex: new RegExp(`^${identifier}$`, 'i') } },
         { email: { $regex: new RegExp(`^${identifier}$`, 'i') } },
         { userId: { $regex: new RegExp(`^${identifier}$`, 'i') } },
         { officerId: { $regex: new RegExp(`^${identifier}$`, 'i') } }
@@ -133,10 +153,22 @@ app.post('/api/auth/login', async (req, res) => {
     });
 
     if (!user) {
-      return res.status(404).json({ success: false, message: 'User ID / Official email not found in database' });
+      return res.status(404).json({ success: false, message: 'Username / Official ID not found in database' });
     }
 
-    if (user.password !== password) {
+    // Verify Password: check bcrypt password_hash OR plain-text password
+    let isPasswordValid = false;
+    if (user.password_hash) {
+      isPasswordValid = await bcrypt.compare(password, user.password_hash);
+    } else if (user.password) {
+      if (user.password === password) {
+        isPasswordValid = true;
+      } else {
+        isPasswordValid = await bcrypt.compare(password, user.password).catch(() => false);
+      }
+    }
+
+    if (!isPasswordValid) {
       return res.status(401).json({ success: false, message: 'Incorrect password. Please enter valid credentials.' });
     }
 
@@ -148,10 +180,11 @@ app.post('/api/auth/login', async (req, res) => {
       message: 'Login credentials verified. OTP generated.',
       otp: generatedOtp,
       user: {
-        name: user.name || user.userId || user.email?.split('@')[0] || 'Inspector',
-        email: user.email || user.userId || '',
-        officerId: user.officerId || user.userId || 'DLN-001',
-        designation: user.designation || 'Legal Metrology Inspector',
+        name: user.full_name || user.name || user.username || 'Chief Controller',
+        username: user.username || user.userId || '',
+        email: user.email || user.username || '',
+        officerId: user.username || user.officerId || user.userId || 'CLM-01',
+        designation: user.role || user.designation || 'Chief Controller',
         jurisdiction: user.jurisdiction || 'Headquarters',
         reports: user.reports || ''
       }
