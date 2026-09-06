@@ -193,7 +193,7 @@ app.post('/api/auth/login', async (req, res) => {
     let jurisdictionName = user.jurisdiction || 'Delhi North';
     if (user.jurisdiction_id) {
       try {
-        const jur = await Jurisdiction.findOne({
+        const jur = await mongoose.connection.collection('jurisdictions').findOne({
           $or: [
             { _id: user.jurisdiction_id },
             { id: user.jurisdiction_id }
@@ -224,6 +224,7 @@ app.post('/api/auth/login', async (req, res) => {
         officerId: user.username || user.officerId || user.userId || 'LMO-01',
         designation: designationDisplay,
         jurisdiction: jurisdictionName,
+        phone: user.phone || '',
         reports: user.reports || ''
       }
     });
@@ -300,6 +301,79 @@ app.get('/api/reports', async (req, res) => {
       success: true,
       count: allReports.length,
       reports: allReports
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// E. GET OFFICER PROFILE (Fetches Officer Details from Database)
+app.get('/api/officer/profile', async (req, res) => {
+  try {
+    const { identifier } = req.query;
+    let user = null;
+
+    if (identifier && identifier.trim()) {
+      const id = identifier.trim();
+      user = await User.findOne({
+        $or: [
+          { username: { $regex: new RegExp(`^${id}$`, 'i') } },
+          { email: { $regex: new RegExp(`^${id}$`, 'i') } },
+          { userId: { $regex: new RegExp(`^${id}$`, 'i') } },
+          { officerId: { $regex: new RegExp(`^${id}$`, 'i') } },
+          { phone: id }
+        ]
+      });
+    }
+
+    // Fallback: If no identifier or not found, return active officer from database
+    if (!user) {
+      user = await User.findOne({
+        $or: [
+          { status: { $regex: new RegExp('^active$', 'i') } },
+          { role: { $exists: true } }
+        ]
+      });
+    }
+
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'Officer not found in database' });
+    }
+
+    // Resolve jurisdiction name
+    let jurisdictionName = user.jurisdiction || 'Delhi North';
+    if (user.jurisdiction_id) {
+      try {
+        const jur = await mongoose.connection.collection('jurisdictions').findOne({
+          $or: [
+            { _id: user.jurisdiction_id },
+            { id: user.jurisdiction_id }
+          ]
+        });
+        if (jur && (jur.name || jur.jurisdiction_name || jur.title)) {
+          jurisdictionName = jur.name || jur.jurisdiction_name || jur.title;
+        }
+      } catch (_) {}
+    }
+
+    // Format designation
+    let designationDisplay = user.role || user.designation || 'Legal Metrology Officer';
+    if (user.role === 'LMO') designationDisplay = 'Legal Metrology Officer (LMO)';
+    if (user.role === 'CLM') designationDisplay = 'Chief Controller (CLM)';
+    if (user.role === 'AC') designationDisplay = 'Assistant Controller (AC)';
+
+    res.json({
+      success: true,
+      officer: {
+        name: user.full_name || user.name || user.username || 'Officer',
+        username: user.username || user.userId || '',
+        email: user.email || user.username || '',
+        officerId: user.username || user.officerId || user.userId || 'LMO-01',
+        designation: designationDisplay,
+        jurisdiction: jurisdictionName,
+        phone: user.phone || '',
+        reports: user.reports || ''
+      }
     });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
