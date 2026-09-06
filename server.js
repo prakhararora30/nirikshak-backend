@@ -69,7 +69,18 @@ const reportSchema = new mongoose.Schema({
   timestamp: { type: Date, default: Date.now }
 }, { strict: false });
 
-const InspectionReport = mongoose.model('InspectionReport', reportSchema);
+const InspectionReport = mongoose.model('InspectionReport', reportSchema, 'inspectionreports');
+const Report = mongoose.model('Report', reportSchema, 'reports');
+
+// Jurisdiction Schema
+const jurisdictionSchema = new mongoose.Schema({
+  _id: { type: String },
+  name: { type: String },
+  code: { type: String },
+  state: { type: String }
+}, { strict: false });
+
+const Jurisdiction = mongoose.model('Jurisdiction', jurisdictionSchema, 'jurisdictions');
 
 // ---------------------------------------------------
 // 4. REST API ENDPOINTS FOR ANDROID APP
@@ -142,18 +153,24 @@ app.post('/api/auth/login', async (req, res) => {
       });
     }
 
-    // Query user strictly from database by username, email, userId, or officerId (case-insensitive)
+    // Query user strictly from database by username, email, userId, officerId, or phone (case-insensitive)
     const user = await User.findOne({
       $or: [
         { username: { $regex: new RegExp(`^${identifier}$`, 'i') } },
         { email: { $regex: new RegExp(`^${identifier}$`, 'i') } },
         { userId: { $regex: new RegExp(`^${identifier}$`, 'i') } },
-        { officerId: { $regex: new RegExp(`^${identifier}$`, 'i') } }
+        { officerId: { $regex: new RegExp(`^${identifier}$`, 'i') } },
+        { phone: identifier }
       ]
     });
 
     if (!user) {
       return res.status(404).json({ success: false, message: 'Username / Official ID not found in database' });
+    }
+
+    // Check account status
+    if (user.status && user.status.toLowerCase() !== 'active') {
+      return res.status(403).json({ success: false, message: `Account status is '${user.status}'. Please contact system administrator.` });
     }
 
     // Verify Password: check bcrypt password_hash OR plain-text password
@@ -172,20 +189,41 @@ app.post('/api/auth/login', async (req, res) => {
       return res.status(401).json({ success: false, message: 'Incorrect password. Please enter valid credentials.' });
     }
 
+    // Resolve jurisdiction name from jurisdictions collection if jurisdiction_id exists
+    let jurisdictionName = user.jurisdiction || 'Delhi North';
+    if (user.jurisdiction_id) {
+      try {
+        const jur = await Jurisdiction.findOne({
+          $or: [
+            { _id: user.jurisdiction_id },
+            { id: user.jurisdiction_id }
+          ]
+        });
+        if (jur && (jur.name || jur.jurisdiction_name || jur.title)) {
+          jurisdictionName = jur.name || jur.jurisdiction_name || jur.title;
+        }
+      } catch (_) {}
+    }
+
     // Generate random 6-Digit OTP
     const generatedOtp = Math.floor(100000 + Math.random() * 900000).toString();
+
+    // Map designation nicely: LMO -> Legal Metrology Officer, CLM -> Chief Controller
+    let designationDisplay = user.role || user.designation || 'Legal Metrology Officer';
+    if (user.role === 'LMO') designationDisplay = 'Legal Metrology Officer (LMO)';
+    if (user.role === 'CLM') designationDisplay = 'Chief Controller (CLM)';
 
     res.json({
       success: true,
       message: 'Login credentials verified. OTP generated.',
       otp: generatedOtp,
       user: {
-        name: user.full_name || user.name || user.username || 'Chief Controller',
+        name: user.full_name || user.name || user.username || 'Officer',
         username: user.username || user.userId || '',
         email: user.email || user.username || '',
-        officerId: user.username || user.officerId || user.userId || 'CLM-01',
-        designation: user.role || user.designation || 'Chief Controller',
-        jurisdiction: user.jurisdiction || 'Headquarters',
+        officerId: user.username || user.officerId || user.userId || 'LMO-01',
+        designation: designationDisplay,
+        jurisdiction: jurisdictionName,
         reports: user.reports || ''
       }
     });
@@ -224,14 +262,30 @@ app.post('/api/reports/create', async (req, res) => {
 // D. FETCH ALL REPORTS
 app.get('/api/reports', async (req, res) => {
   try {
-    const inspectionReports = await InspectionReport.find().sort({ timestamp: -1 });
+    const [inspectionReports, dbReports] = await Promise.all([
+      InspectionReport.find().sort({ timestamp: -1 }).catch(() => []),
+      Report.find().sort({ timestamp: -1 }).catch(() => [])
+    ]);
+
+    // Format reports from reports collection if any
+    const formattedDbReports = dbReports.map(r => ({
+      _id: r._id,
+      officerEmail: r.officerEmail || r.created_by || "",
+      productName: r.productName || r.title || "Inspection Audit Report.pdf",
+      brand: r.brand || "Statutory Check",
+      verdict: r.verdict || "VERIFIED",
+      imagesCount: r.imagesCount || 1,
+      fileUrl: r.fileUrl || r.file_url || r.reports || "https://res.cloudinary.com/h4vwjif7/raw/upload/v1788366925/rns-bills/1788366925033-c33496b597c3.pdf",
+      remarks: r.remarks || "Packaged Commodities Rule Compliance",
+      timestamp: r.timestamp || r.createdAt || r.created_at || new Date()
+    }));
 
     // Also fetch reports attached to officers in MongoDB
     const usersWithReports = await User.find({ reports: { $exists: true, $ne: "" } });
     const userReportsList = usersWithReports.map(u => ({
       _id: u._id,
       officerEmail: u.email,
-      productName: `${u.name}'s Metrology Audit Report.pdf`,
+      productName: `${u.full_name || u.name}'s Metrology Audit Report.pdf`,
       brand: "Rule 6 Act",
       verdict: "APPROVED",
       imagesCount: 1,
@@ -240,7 +294,7 @@ app.get('/api/reports', async (req, res) => {
       timestamp: u.createdAt || new Date()
     }));
 
-    const allReports = [...userReportsList, ...inspectionReports];
+    const allReports = [...formattedDbReports, ...inspectionReports, ...userReportsList];
 
     res.json({
       success: true,
