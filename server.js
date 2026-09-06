@@ -22,13 +22,27 @@ app.use(cors());         // Enables Cross-Origin requests for Android app
 const MONGO_URI = process.env.MONGO_URI;
 
 mongoose.connect(MONGO_URI)
-  .then(() => {
+  .then(async () => {
     console.log('✅ Connected to MongoDB Atlas Cloud Database');
+    await cleanupLegacyCollections();
   })
   .catch((err) => {
     console.error('❌ MongoDB Connection Warning:', err.message);
     console.warn('⚠️ Server remains running. If queries fail, check MongoDB Atlas Network Access (allow 0.0.0.0/0).');
   });
+
+// Automatically drop legacy 'inspectionreports' collection so all reports are stored ONLY in 'reports'
+async function cleanupLegacyCollections() {
+  try {
+    const collections = await mongoose.connection.db.listCollections().toArray();
+    if (collections.some(c => c.name === 'inspectionreports')) {
+      await mongoose.connection.db.dropCollection('inspectionreports');
+      console.log("🧹 Dropped legacy 'inspectionreports' collection from MongoDB Atlas");
+    }
+  } catch (err) {
+    console.warn('Legacy collection cleanup warning:', err.message);
+  }
+}
 
 // ---------------------------------------------------
 // 3. MONGOOSE DATA SCHEMAS
@@ -52,24 +66,50 @@ const userSchema = new mongoose.Schema({
 
 const User = mongoose.model('User', userSchema);
 
-// Inspection Report Schema
+// Inspection Report Schema (Strictly bound to 'reports' collection)
 const reportSchema = new mongoose.Schema({
+  reportId: { type: String, sparse: true },
+  referenceNo: { type: String },
+  reference_no: { type: String },
   officerEmail: { type: String },
-  productName: { type: String, required: true },
+  officerId: { type: String },
+  lmo_id: { type: String },
+  filed_by: { type: String },
+  jurisdictionId: { type: String },
+  jurisdiction_id: { type: String },
+  productName: { type: String },
+  product_name: { type: String },
+  productId: { type: String },
   brand: { type: String, default: "Generic" },
-  verdict: { type: String, default: "VERIFIED" },
+  status: { type: String, enum: ['pending', 'approved', 'rejected'], default: 'pending' },
+  complianceResult: { type: String, default: 'COMPLIANT' },
+  compliance_result: { type: String, default: 'COMPLIANT' },
+  verdict: { type: String, default: "PENDING" },
   imagesCount: { type: Number, default: 1 },
+  evidenceImages: { type: Array, default: [] },
+  evidence_images: { type: Array, default: [] },
+  summary: { type: Object, default: {} },
   declarations: {
     mrpVerified: { type: Boolean, default: true },
     netQuantityVerified: { type: Boolean, default: true },
     countryOfOriginVerified: { type: Boolean, default: true }
   },
-  remarks: { type: String, default: "Compliant under Rule 6 of Metrology Act" },
+  remarks: { type: String, default: "Legal Metrology Inspection report filed" },
   fileUrl: { type: String, default: "https://res.cloudinary.com/h4vwjif7/raw/upload/v1788366925/rns-bills/1788366925033-c33496b597c3.pdf" },
-  timestamp: { type: Date, default: Date.now }
+  file_url: { type: String },
+  pdfUrl: { type: String },
+  pdf_url: { type: String },
+  decisionReason: { type: String, default: null },
+  decision_reason: { type: String, default: null },
+  decidedBy: { type: String, default: null },
+  decided_by: { type: String, default: null },
+  decidedAt: { type: Date, default: null },
+  decided_at: { type: Date, default: null },
+  timestamp: { type: Date, default: Date.now },
+  created_at: { type: Date, default: Date.now }
 }, { strict: false });
 
-const InspectionReport = mongoose.model('InspectionReport', reportSchema, 'inspectionreports');
+// Exclusively bind to 'reports' collection (NEVER 'inspectionreports')
 const Report = mongoose.model('Report', reportSchema, 'reports');
 
 // Jurisdiction Schema
@@ -233,26 +273,82 @@ app.post('/api/auth/login', async (req, res) => {
   }
 });
 
-// C. CREATE INSPECTION REPORT
+// C. CREATE INSPECTION REPORT (Strictly saves / upserts into 'reports' collection)
 app.post('/api/reports/create', async (req, res) => {
   try {
-    const { officerEmail, productName, brand, verdict, imagesCount, declarations, remarks, fileUrl } = req.body;
-
-    const report = new InspectionReport({
+    const {
       officerEmail,
+      officerId,
+      jurisdictionId,
+      reportId,
+      referenceNo,
       productName,
       brand,
+      status,
+      complianceResult,
       verdict,
       imagesCount,
       declarations,
       remarks,
-      fileUrl: fileUrl || "https://res.cloudinary.com/h4vwjif7/raw/upload/v1788366925/rns-bills/1788366925033-c33496b597c3.pdf"
+      fileUrl
+    } = req.body;
+
+    const generatedReportId = reportId || referenceNo || `REP-${Date.now()}`;
+    const initialStatus = status || (verdict && ['APPROVED', 'VERIFIED'].includes(verdict.toUpperCase()) ? 'approved' : verdict === 'REJECTED' ? 'rejected' : 'pending');
+
+    // Check if report already exists in 'reports' collection
+    let report = await Report.findOne({
+      $or: [
+        { reportId: generatedReportId },
+        { referenceNo: generatedReportId },
+        { reference_no: generatedReportId },
+        ...(mongoose.Types.ObjectId.isValid(generatedReportId) ? [{ _id: generatedReportId }] : [])
+      ]
     });
 
-    await report.save();
+    if (report) {
+      if (officerEmail) report.officerEmail = officerEmail;
+      if (officerId) { report.officerId = officerId; report.lmo_id = officerId; report.filed_by = officerId; }
+      if (jurisdictionId) { report.jurisdictionId = jurisdictionId; report.jurisdiction_id = jurisdictionId; }
+      if (productName) { report.productName = productName; report.product_name = productName; }
+      if (brand) report.brand = brand;
+      if (status) report.status = status.toLowerCase();
+      if (complianceResult) { report.complianceResult = complianceResult; report.compliance_result = complianceResult; }
+      if (verdict) report.verdict = verdict;
+      if (fileUrl) { report.fileUrl = fileUrl; report.pdfUrl = fileUrl; }
+      if (declarations) report.declarations = declarations;
+      if (remarks) report.remarks = remarks;
+      await report.save();
+    } else {
+      report = new Report({
+        reportId: generatedReportId,
+        referenceNo: generatedReportId,
+        reference_no: generatedReportId,
+        officerEmail: officerEmail || '',
+        officerId: officerId || 'LMO-01',
+        lmo_id: officerId || 'LMO-01',
+        filed_by: officerId || 'LMO-01',
+        jurisdictionId: jurisdictionId || '',
+        jurisdiction_id: jurisdictionId || '',
+        productName: productName || 'Packaged Commodity',
+        product_name: productName || 'Packaged Commodity',
+        brand: brand || "Generic",
+        status: initialStatus,
+        complianceResult: complianceResult || "COMPLIANT",
+        compliance_result: complianceResult || "COMPLIANT",
+        verdict: verdict || "PENDING",
+        imagesCount: imagesCount || 1,
+        declarations,
+        remarks: remarks || "Statutory inspection filed in reports collection",
+        fileUrl: fileUrl || "https://res.cloudinary.com/h4vwjif7/raw/upload/v1788366925/rns-bills/1788366925033-c33496b597c3.pdf",
+        pdfUrl: fileUrl || "https://res.cloudinary.com/h4vwjif7/raw/upload/v1788366925/rns-bills/1788366925033-c33496b597c3.pdf"
+      });
+      await report.save();
+    }
+
     res.status(201).json({
       success: true,
-      message: 'Inspection report saved to MongoDB Atlas',
+      message: 'Inspection report filed in reports collection',
       report
     });
   } catch (error) {
@@ -260,23 +356,29 @@ app.post('/api/reports/create', async (req, res) => {
   }
 });
 
-// D. FETCH ALL REPORTS
+// D. FETCH ALL REPORTS (Exclusively from 'reports' collection)
 app.get('/api/reports', async (req, res) => {
   try {
-    const [inspectionReports, dbReports] = await Promise.all([
-      InspectionReport.find().sort({ timestamp: -1 }).catch(() => []),
-      Report.find().sort({ timestamp: -1 }).catch(() => [])
-    ]);
+    const dbReports = await Report.find().sort({ timestamp: -1, created_at: -1 });
 
-    // Format reports from reports collection if any
     const formattedDbReports = dbReports.map(r => ({
       _id: r._id,
+      id: r._id,
+      reportId: r.reportId || r.referenceNo || r.reference_no || r._id.toString(),
+      referenceNo: r.referenceNo || r.reference_no || r.reportId || r._id.toString(),
       officerEmail: r.officerEmail || r.created_by || "",
-      productName: r.productName || r.title || "Inspection Audit Report.pdf",
+      officerId: r.officerId || r.lmo_id || r.filed_by || "",
+      jurisdictionId: r.jurisdictionId || r.jurisdiction_id || "",
+      productName: r.productName || r.product_name || r.title || "Inspection Audit Report.pdf",
       brand: r.brand || "Statutory Check",
-      verdict: r.verdict || "VERIFIED",
+      status: r.status || (r.verdict && ['APPROVED', 'VERIFIED'].includes(r.verdict.toUpperCase()) ? 'approved' : r.verdict === 'REJECTED' ? 'rejected' : 'pending'),
+      complianceResult: r.complianceResult || r.compliance_result || "COMPLIANT",
+      verdict: r.verdict || (r.status ? r.status.toUpperCase() : "PENDING"),
       imagesCount: r.imagesCount || 1,
-      fileUrl: r.fileUrl || r.file_url || r.reports || "https://res.cloudinary.com/h4vwjif7/raw/upload/v1788366925/rns-bills/1788366925033-c33496b597c3.pdf",
+      decisionReason: r.decisionReason || r.decision_reason || null,
+      decidedBy: r.decidedBy || r.decided_by || null,
+      decidedAt: r.decidedAt || r.decided_at || null,
+      fileUrl: r.fileUrl || r.file_url || r.pdfUrl || r.pdf_url || r.reports || "https://res.cloudinary.com/h4vwjif7/raw/upload/v1788366925/rns-bills/1788366925033-c33496b597c3.pdf",
       remarks: r.remarks || "Packaged Commodities Rule Compliance",
       timestamp: r.timestamp || r.createdAt || r.created_at || new Date()
     }));
@@ -285,9 +387,15 @@ app.get('/api/reports', async (req, res) => {
     const usersWithReports = await User.find({ reports: { $exists: true, $ne: "" } });
     const userReportsList = usersWithReports.map(u => ({
       _id: u._id,
-      officerEmail: u.email,
-      productName: `${u.full_name || u.name}'s Metrology Audit Report.pdf`,
+      id: u._id,
+      reportId: `REP-OFFICER-${u.username || u.officerId || u._id}`,
+      referenceNo: `REP-OFFICER-${u.username || u.officerId || u._id}`,
+      officerEmail: u.email || "",
+      officerId: u.username || u.officerId || "",
+      productName: `${u.full_name || u.name || 'Officer'}'s Metrology Audit Report.pdf`,
       brand: "Rule 6 Act",
+      status: "approved",
+      complianceResult: "COMPLIANT",
       verdict: "APPROVED",
       imagesCount: 1,
       fileUrl: u.reports,
@@ -295,12 +403,135 @@ app.get('/api/reports', async (req, res) => {
       timestamp: u.createdAt || new Date()
     }));
 
-    const allReports = [...formattedDbReports, ...inspectionReports, ...userReportsList];
+    const allReports = [...formattedDbReports, ...userReportsList];
 
     res.json({
       success: true,
       count: allReports.length,
       reports: allReports
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// STATUTORY SECTION 3: GET SINGLE REPORT STATUTORY STATUS & AC DECISION
+// GET /api/v1/reports/:id
+app.get('/api/v1/reports/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    let report = await Report.findOne({
+      $or: [
+        { reportId: id },
+        { referenceNo: id },
+        { reference_no: id },
+        ...(mongoose.Types.ObjectId.isValid(id) ? [{ _id: id }] : [])
+      ]
+    });
+
+    if (!report) {
+      return res.status(404).json({ success: false, message: `Report ${id} not found` });
+    }
+
+    res.json({
+      success: true,
+      data: {
+        reportId: report.reportId || report._id.toString(),
+        referenceNo: report.referenceNo || report.reference_no || report.reportId || report._id.toString(),
+        productName: report.productName || report.product_name,
+        status: report.status,
+        complianceResult: report.complianceResult || report.compliance_result,
+        officerId: report.officerId || report.lmo_id || report.filed_by,
+        jurisdictionId: report.jurisdictionId || report.jurisdiction_id,
+        decisionReason: report.decisionReason || report.decision_reason,
+        decidedBy: report.decidedBy || report.decided_by,
+        decidedAt: report.decidedAt || report.decided_at,
+        pdfUrl: report.fileUrl || report.pdfUrl
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// STATUTORY SECTION 4: INSPECTOR'S OWN REPORTS LIST API
+// GET /api/inspector/reports
+app.get('/api/inspector/reports', async (req, res) => {
+  try {
+    const reports = await Report.find().sort({ timestamp: -1, created_at: -1 });
+
+    const formattedReports = reports.map(r => ({
+      reportId: r.reportId || r.referenceNo || r.reference_no || r._id.toString(),
+      referenceNo: r.referenceNo || r.reference_no || r.reportId || r._id.toString(),
+      productName: r.productName || r.product_name,
+      status: r.status,
+      complianceResult: r.complianceResult || r.compliance_result,
+      officerId: r.officerId || r.lmo_id || r.filed_by,
+      jurisdictionId: r.jurisdictionId || r.jurisdiction_id,
+      decisionReason: r.decisionReason || r.decision_reason,
+      decidedBy: r.decidedBy || r.decided_by,
+      decidedAt: r.decidedAt || r.decided_at,
+      pdfUrl: r.fileUrl || r.pdfUrl,
+      timestamp: r.timestamp || r.createdAt
+    }));
+
+    res.json({
+      success: true,
+      count: formattedReports.length,
+      reports: formattedReports,
+      data: formattedReports
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ASSISTANT CONTROLLER WORKFLOW SIMULATION ENDPOINT
+// POST /api/v1/reports/:id/decide
+app.post('/api/v1/reports/:id/decide', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status, decisionReason, decidedBy } = req.body;
+
+    if (!status || !['approved', 'rejected', 'pending'].includes(status.toLowerCase())) {
+      return res.status(400).json({ success: false, message: "Valid status required ('approved', 'rejected', or 'pending')" });
+    }
+
+    let report = await Report.findOne({
+      $or: [
+        { reportId: id },
+        { referenceNo: id },
+        { reference_no: id },
+        ...(mongoose.Types.ObjectId.isValid(id) ? [{ _id: id }] : [])
+      ]
+    });
+
+    if (!report) {
+      return res.status(404).json({ success: false, message: `Report ${id} not found` });
+    }
+
+    report.status = status.toLowerCase();
+    report.verdict = status.toUpperCase();
+    report.decisionReason = decisionReason || (status.toLowerCase() === 'rejected' ? 'Statutory rejection by Assistant Controller' : null);
+    report.decidedBy = decidedBy || 'Assistant Controller';
+    report.decidedAt = status.toLowerCase() === 'pending' ? null : new Date();
+
+    await report.save();
+
+    res.json({
+      success: true,
+      message: `Report ${report.reportId} updated to ${report.status}`,
+      data: {
+        reportId: report.reportId,
+        referenceNo: report.referenceNo,
+        productName: report.productName,
+        status: report.status,
+        complianceResult: report.complianceResult,
+        decisionReason: report.decisionReason,
+        decidedBy: report.decidedBy,
+        decidedAt: report.decidedAt,
+        pdfUrl: report.fileUrl
+      }
     });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
