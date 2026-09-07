@@ -95,10 +95,13 @@ const reportSchema = new mongoose.Schema({
     countryOfOriginVerified: { type: Boolean, default: true }
   },
   remarks: { type: String, default: "Legal Metrology Inspection report filed" },
-  fileUrl: { type: String, default: "https://res.cloudinary.com/h4vwjif7/raw/upload/v1788366925/rns-bills/1788366925033-c33496b597c3.pdf" },
+  fileUrl: { type: String, default: "" },
   file_url: { type: String },
   pdfUrl: { type: String },
   pdf_url: { type: String },
+  cloudinaryUrl: { type: String },
+  report_pdf_link: { type: String },
+  directPdfUrl: { type: String },
   decisionReason: { type: String, default: null },
   decision_reason: { type: String, default: null },
   decidedBy: { type: String, default: null },
@@ -258,12 +261,15 @@ app.post('/api/auth/login', async (req, res) => {
       message: 'Login credentials verified. OTP generated.',
       otp: generatedOtp,
       user: {
+        _id: user._id ? user._id.toString() : (user.id || 'b4b9c13e-b3fb-4603-a2c3-7b7516b4a33c'),
+        id: user._id ? user._id.toString() : (user.id || 'b4b9c13e-b3fb-4603-a2c3-7b7516b4a33c'),
         name: user.full_name || user.name || user.username || 'Officer',
         username: user.username || user.userId || '',
         email: user.email || user.username || '',
         officerId: user.username || user.officerId || user.userId || 'LMO-01',
         designation: designationDisplay,
         jurisdiction: jurisdictionName,
+        jurisdictionId: user.jurisdiction_id || user.jurisdictionId || '',
         phone: user.phone || '',
         reports: user.reports || ''
       }
@@ -340,8 +346,8 @@ app.post('/api/reports/create', async (req, res) => {
         imagesCount: imagesCount || 1,
         declarations,
         remarks: remarks || "Statutory inspection filed in reports collection",
-        fileUrl: fileUrl || "https://res.cloudinary.com/h4vwjif7/raw/upload/v1788366925/rns-bills/1788366925033-c33496b597c3.pdf",
-        pdfUrl: fileUrl || "https://res.cloudinary.com/h4vwjif7/raw/upload/v1788366925/rns-bills/1788366925033-c33496b597c3.pdf"
+        fileUrl: fileUrl || "",
+        pdfUrl: fileUrl || ""
       });
       await report.save();
     }
@@ -370,31 +376,53 @@ app.get('/api/reports', async (req, res) => {
       ]
     };
 
-    const dbReports = await Report.find(filter).sort({ timestamp: -1, created_at: -1 });
+    const dbReports = await Report.find(filter).sort({ created_at: -1, timestamp: -1, _id: -1 }).lean();
 
-    const formattedDbReports = dbReports.map(r => ({
-      _id: r._id,
-      id: r._id,
-      reportId: r.reportId || r.referenceNo || r.reference_no || r._id.toString(),
-      referenceNo: r.referenceNo || r.reference_no || r.reportId || r._id.toString(),
-      officerEmail: r.officerEmail || r.created_by || "prakhar.arora2877@gmail.com",
-      officerId: r.officerId || r.lmo_id || r.filed_by || targetLmoId,
-      lmo_id: r.lmo_id || r.filed_by || targetLmoId,
-      filed_by: r.filed_by || r.lmo_id || targetLmoId,
-      jurisdictionId: r.jurisdictionId || r.jurisdiction_id || "",
-      productName: r.productName || r.product_name || r.title || "Packaged Commodity Audit.pdf",
-      brand: r.brand || "Rule 6 / Rule 9 Act",
-      status: r.status || (r.verdict && ['APPROVED', 'VERIFIED'].includes(r.verdict.toUpperCase()) ? 'approved' : r.verdict === 'REJECTED' ? 'rejected' : 'pending'),
-      complianceResult: r.complianceResult || r.compliance_result || "COMPLIANT",
-      verdict: r.verdict || (r.status ? r.status.toUpperCase() : "PENDING"),
-      imagesCount: r.imagesCount || 1,
-      decisionReason: r.decisionReason || r.decision_reason || null,
-      decidedBy: r.decidedBy || r.decided_by || null,
-      decidedAt: r.decidedAt || r.decided_at || null,
-      fileUrl: r.fileUrl || r.file_url || r.pdfUrl || r.pdf_url || r.reports || "https://res.cloudinary.com/h4vwjif7/raw/upload/v1788366925/rns-bills/1788366925033-c33496b597c3.pdf",
-      remarks: r.remarks || "Legal Metrology Packaged Commodities Rule Inspection",
-      timestamp: r.timestamp || r.createdAt || r.created_at || new Date()
-    }));
+    const formattedDbReports = dbReports.map(r => {
+      const realPdfUrl = r.pdfUrl || r.pdf_url || r.cloudinaryUrl || r.report_pdf_link || r.directPdfUrl || r.fileUrl || r.file_url || "";
+      const prodName = r.productName || r.product_name || r.title || "Packaged Commodity Audit.pdf";
+      const repId = r.reportId || r.referenceNo || r.reference_no || (r._id ? r._id.toString() : "REP-OFFICIAL");
+      const statusVal = (r.status || (r.verdict && ['APPROVED', 'VERIFIED'].includes(r.verdict.toUpperCase()) ? 'approved' : r.verdict === 'REJECTED' ? 'rejected' : 'pending')).toLowerCase();
+      const compVal = r.complianceResult || r.compliance_result || "COMPLIANT";
+
+      return {
+        _id: r._id ? r._id.toString() : repId,
+        id: r._id ? r._id.toString() : repId,
+        reportId: repId,
+        referenceNo: r.referenceNo || r.reference_no || repId,
+        reference_no: r.reference_no || r.referenceNo || repId,
+        officerEmail: r.officerEmail || r.created_by || "prakhar.arora2877@gmail.com",
+        officerId: r.officerId || r.lmo_id || r.filed_by || targetLmoId,
+        lmo_id: r.lmo_id || r.filed_by || targetLmoId,
+        filed_by: r.filed_by || r.lmo_id || targetLmoId,
+        jurisdictionId: r.jurisdictionId || r.jurisdiction_id || "",
+        jurisdiction_id: r.jurisdiction_id || r.jurisdictionId || "",
+        productName: prodName,
+        product_name: prodName,
+        brand: r.brand || "Rule 6 / Rule 9 Act",
+        status: statusVal,
+        complianceResult: compVal,
+        compliance_result: compVal,
+        verdict: r.verdict || statusVal.toUpperCase(),
+        imagesCount: r.imagesCount || 1,
+        decisionReason: r.decisionReason || r.decision_reason || null,
+        decision_reason: r.decision_reason || r.decisionReason || null,
+        decidedBy: r.decidedBy || r.decided_by || null,
+        decided_by: r.decided_by || r.decidedBy || null,
+        decidedAt: r.decidedAt || r.decided_at || null,
+        decided_at: r.decided_at || r.decidedAt || null,
+        fileUrl: realPdfUrl,
+        file_url: realPdfUrl,
+        pdfUrl: realPdfUrl,
+        pdf_url: realPdfUrl,
+        cloudinaryUrl: r.cloudinaryUrl || realPdfUrl,
+        report_pdf_link: r.report_pdf_link || realPdfUrl,
+        directPdfUrl: r.directPdfUrl || (realPdfUrl ? realPdfUrl : `https://nirikshak-api.duckdns.org/api/v1/reports/${repId}/pdf`),
+        remarks: r.remarks || "Legal Metrology Packaged Commodities Rule Inspection",
+        timestamp: r.timestamp || r.createdAt || r.created_at || new Date(),
+        created_at: r.created_at || r.createdAt || r.timestamp || new Date()
+      };
+    });
 
     res.json({
       success: true,
@@ -418,26 +446,36 @@ app.get('/api/v1/reports/:id', async (req, res) => {
         { reference_no: id },
         ...(mongoose.Types.ObjectId.isValid(id) ? [{ _id: id }] : [])
       ]
-    });
+    }).lean();
 
     if (!report) {
       return res.status(404).json({ success: false, message: `Report ${id} not found` });
     }
 
+    const realPdfUrl = report.pdfUrl || report.pdf_url || report.cloudinaryUrl || report.report_pdf_link || report.directPdfUrl || report.fileUrl || report.file_url || "";
+    const repId = report.reportId || report.referenceNo || report.reference_no || (report._id ? report._id.toString() : id);
+
     res.json({
       success: true,
       data: {
-        reportId: report.reportId || report._id.toString(),
-        referenceNo: report.referenceNo || report.reference_no || report.reportId || report._id.toString(),
+        reportId: repId,
+        referenceNo: report.referenceNo || report.reference_no || repId,
+        reference_no: report.reference_no || report.referenceNo || repId,
         productName: report.productName || report.product_name,
+        product_name: report.productName || report.product_name,
         status: report.status,
         complianceResult: report.complianceResult || report.compliance_result,
         officerId: report.officerId || report.lmo_id || report.filed_by,
+        lmo_id: report.lmo_id || report.filed_by || report.officerId,
         jurisdictionId: report.jurisdictionId || report.jurisdiction_id,
         decisionReason: report.decisionReason || report.decision_reason,
         decidedBy: report.decidedBy || report.decided_by,
         decidedAt: report.decidedAt || report.decided_at,
-        pdfUrl: report.fileUrl || report.pdfUrl
+        fileUrl: realPdfUrl,
+        pdfUrl: realPdfUrl,
+        cloudinaryUrl: report.cloudinaryUrl || realPdfUrl,
+        report_pdf_link: report.report_pdf_link || realPdfUrl,
+        directPdfUrl: report.directPdfUrl || (realPdfUrl ? realPdfUrl : `https://nirikshak-api.duckdns.org/api/v1/reports/${repId}/pdf`)
       }
     });
   } catch (error) {
@@ -459,24 +497,38 @@ app.get('/api/inspector/reports', async (req, res) => {
       ]
     };
 
-    const reports = await Report.find(filter).sort({ timestamp: -1, created_at: -1 });
+    const reports = await Report.find(filter).sort({ created_at: -1, timestamp: -1, _id: -1 }).lean();
 
-    const formattedReports = reports.map(r => ({
-      reportId: r.reportId || r.referenceNo || r.reference_no || r._id.toString(),
-      referenceNo: r.referenceNo || r.reference_no || r.reportId || r._id.toString(),
-      productName: r.productName || r.product_name || "Packaged Commodity Audit.pdf",
-      status: r.status,
-      complianceResult: r.complianceResult || r.compliance_result || "COMPLIANT",
-      officerId: r.officerId || r.lmo_id || r.filed_by || targetLmoId,
-      lmo_id: r.lmo_id || r.filed_by || targetLmoId,
-      filed_by: r.filed_by || r.lmo_id || targetLmoId,
-      jurisdictionId: r.jurisdictionId || r.jurisdiction_id,
-      decisionReason: r.decisionReason || r.decision_reason,
-      decidedBy: r.decidedBy || r.decided_by,
-      decidedAt: r.decidedAt || r.decided_at,
-      pdfUrl: r.fileUrl || r.file_url || r.pdfUrl || r.pdf_url,
-      timestamp: r.timestamp || r.createdAt
-    }));
+    const formattedReports = reports.map(r => {
+      const realPdfUrl = r.pdfUrl || r.pdf_url || r.cloudinaryUrl || r.report_pdf_link || r.directPdfUrl || r.fileUrl || r.file_url || "";
+      const repId = r.reportId || r.referenceNo || r.reference_no || (r._id ? r._id.toString() : "REP-OFFICIAL");
+      const prodName = r.productName || r.product_name || "Packaged Commodity Audit.pdf";
+
+      return {
+        _id: r._id ? r._id.toString() : repId,
+        id: r._id ? r._id.toString() : repId,
+        reportId: repId,
+        referenceNo: r.referenceNo || r.reference_no || repId,
+        reference_no: r.reference_no || r.referenceNo || repId,
+        productName: prodName,
+        product_name: prodName,
+        status: r.status,
+        complianceResult: r.complianceResult || r.compliance_result || "COMPLIANT",
+        officerId: r.officerId || r.lmo_id || r.filed_by || targetLmoId,
+        lmo_id: r.lmo_id || r.filed_by || targetLmoId,
+        filed_by: r.filed_by || r.lmo_id || targetLmoId,
+        jurisdictionId: r.jurisdictionId || r.jurisdiction_id,
+        decisionReason: r.decisionReason || r.decision_reason,
+        decidedBy: r.decidedBy || r.decided_by,
+        decidedAt: r.decidedAt || r.decided_at,
+        fileUrl: realPdfUrl,
+        pdfUrl: realPdfUrl,
+        cloudinaryUrl: r.cloudinaryUrl || realPdfUrl,
+        report_pdf_link: r.report_pdf_link || realPdfUrl,
+        directPdfUrl: r.directPdfUrl || (realPdfUrl ? realPdfUrl : `https://nirikshak-api.duckdns.org/api/v1/reports/${repId}/pdf`),
+        timestamp: r.timestamp || r.createdAt || r.created_at || new Date()
+      };
+    });
 
     res.json({
       success: true,
