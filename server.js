@@ -357,20 +357,33 @@ app.post('/api/reports/create', async (req, res) => {
 });
 
 // D. FETCH ALL REPORTS (Exclusively from 'reports' collection)
+// D. FETCH ALL REPORTS (Filtered strictly by LMO ID: defaults to 'b4b9c13e-b3fb-4603-a2c3-7b7516b4a33c')
 app.get('/api/reports', async (req, res) => {
   try {
-    const dbReports = await Report.find().sort({ timestamp: -1, created_at: -1 });
+    const targetLmoId = (req.query.lmo_id || req.query.officerId || req.query.filed_by || 'b4b9c13e-b3fb-4603-a2c3-7b7516b4a33c').trim();
+
+    const filter = {
+      $or: [
+        { lmo_id: targetLmoId },
+        { filed_by: targetLmoId },
+        { officerId: targetLmoId }
+      ]
+    };
+
+    const dbReports = await Report.find(filter).sort({ timestamp: -1, created_at: -1 });
 
     const formattedDbReports = dbReports.map(r => ({
       _id: r._id,
       id: r._id,
       reportId: r.reportId || r.referenceNo || r.reference_no || r._id.toString(),
       referenceNo: r.referenceNo || r.reference_no || r.reportId || r._id.toString(),
-      officerEmail: r.officerEmail || r.created_by || "",
-      officerId: r.officerId || r.lmo_id || r.filed_by || "",
+      officerEmail: r.officerEmail || r.created_by || "prakhar.arora2877@gmail.com",
+      officerId: r.officerId || r.lmo_id || r.filed_by || targetLmoId,
+      lmo_id: r.lmo_id || r.filed_by || targetLmoId,
+      filed_by: r.filed_by || r.lmo_id || targetLmoId,
       jurisdictionId: r.jurisdictionId || r.jurisdiction_id || "",
-      productName: r.productName || r.product_name || r.title || "Inspection Audit Report.pdf",
-      brand: r.brand || "Statutory Check",
+      productName: r.productName || r.product_name || r.title || "Packaged Commodity Audit.pdf",
+      brand: r.brand || "Rule 6 / Rule 9 Act",
       status: r.status || (r.verdict && ['APPROVED', 'VERIFIED'].includes(r.verdict.toUpperCase()) ? 'approved' : r.verdict === 'REJECTED' ? 'rejected' : 'pending'),
       complianceResult: r.complianceResult || r.compliance_result || "COMPLIANT",
       verdict: r.verdict || (r.status ? r.status.toUpperCase() : "PENDING"),
@@ -379,36 +392,14 @@ app.get('/api/reports', async (req, res) => {
       decidedBy: r.decidedBy || r.decided_by || null,
       decidedAt: r.decidedAt || r.decided_at || null,
       fileUrl: r.fileUrl || r.file_url || r.pdfUrl || r.pdf_url || r.reports || "https://res.cloudinary.com/h4vwjif7/raw/upload/v1788366925/rns-bills/1788366925033-c33496b597c3.pdf",
-      remarks: r.remarks || "Packaged Commodities Rule Compliance",
+      remarks: r.remarks || "Legal Metrology Packaged Commodities Rule Inspection",
       timestamp: r.timestamp || r.createdAt || r.created_at || new Date()
     }));
 
-    // Also fetch reports attached to officers in MongoDB
-    const usersWithReports = await User.find({ reports: { $exists: true, $ne: "" } });
-    const userReportsList = usersWithReports.map(u => ({
-      _id: u._id,
-      id: u._id,
-      reportId: `REP-OFFICER-${u.username || u.officerId || u._id}`,
-      referenceNo: `REP-OFFICER-${u.username || u.officerId || u._id}`,
-      officerEmail: u.email || "",
-      officerId: u.username || u.officerId || "",
-      productName: `${u.full_name || u.name || 'Officer'}'s Metrology Audit Report.pdf`,
-      brand: "Rule 6 Act",
-      status: "approved",
-      complianceResult: "COMPLIANT",
-      verdict: "APPROVED",
-      imagesCount: 1,
-      fileUrl: u.reports,
-      remarks: "Official verified legal metrology report",
-      timestamp: u.createdAt || new Date()
-    }));
-
-    const allReports = [...formattedDbReports, ...userReportsList];
-
     res.json({
       success: true,
-      count: allReports.length,
-      reports: allReports
+      count: formattedDbReports.length,
+      reports: formattedDbReports
     });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
@@ -458,20 +449,32 @@ app.get('/api/v1/reports/:id', async (req, res) => {
 // GET /api/inspector/reports
 app.get('/api/inspector/reports', async (req, res) => {
   try {
-    const reports = await Report.find().sort({ timestamp: -1, created_at: -1 });
+    const targetLmoId = (req.query.lmo_id || req.query.officerId || req.query.filed_by || 'b4b9c13e-b3fb-4603-a2c3-7b7516b4a33c').trim();
+
+    const filter = {
+      $or: [
+        { lmo_id: targetLmoId },
+        { filed_by: targetLmoId },
+        { officerId: targetLmoId }
+      ]
+    };
+
+    const reports = await Report.find(filter).sort({ timestamp: -1, created_at: -1 });
 
     const formattedReports = reports.map(r => ({
       reportId: r.reportId || r.referenceNo || r.reference_no || r._id.toString(),
       referenceNo: r.referenceNo || r.reference_no || r.reportId || r._id.toString(),
-      productName: r.productName || r.product_name,
+      productName: r.productName || r.product_name || "Packaged Commodity Audit.pdf",
       status: r.status,
-      complianceResult: r.complianceResult || r.compliance_result,
-      officerId: r.officerId || r.lmo_id || r.filed_by,
+      complianceResult: r.complianceResult || r.compliance_result || "COMPLIANT",
+      officerId: r.officerId || r.lmo_id || r.filed_by || targetLmoId,
+      lmo_id: r.lmo_id || r.filed_by || targetLmoId,
+      filed_by: r.filed_by || r.lmo_id || targetLmoId,
       jurisdictionId: r.jurisdictionId || r.jurisdiction_id,
       decisionReason: r.decisionReason || r.decision_reason,
       decidedBy: r.decidedBy || r.decided_by,
       decidedAt: r.decidedAt || r.decided_at,
-      pdfUrl: r.fileUrl || r.pdfUrl,
+      pdfUrl: r.fileUrl || r.file_url || r.pdfUrl || r.pdf_url,
       timestamp: r.timestamp || r.createdAt
     }));
 
